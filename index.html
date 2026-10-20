@@ -409,8 +409,33 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // Supabase project settings > API. Publishable keys are intended for browser use; never put a service-role key here.
 const SUPABASE_URL = "https://xbtbtstdqhhsfvhxwisu.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_YZ9pTix05VG6vXbaWv5-Tg_SZ9uU0-";
-const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  auth: { detectSessionInUrl: false, persistSession: true, autoRefreshToken: true }
+});
 let currentUser = null;
+
+// Explicitly restore the Supabase session from an OAuth hash callback before checking the user.
+// This avoids rendering the logged-out screen while the callback token is still in the URL.
+const authCallbackReady = (async () => {
+  try {
+    const params = new URLSearchParams(window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "");
+    const access_token = params.get("access_token");
+    const refresh_token = params.get("refresh_token");
+    if (access_token && refresh_token) {
+      const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+      if (error) {
+        console.error("OAuth session restore failed:", error.message);
+      } else {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+    } else if (params.get("error_description") || params.get("error")) {
+      console.error("OAuth callback error:", params.get("error_description") || params.get("error"));
+    }
+  } catch (error) {
+    console.error("OAuth callback processing failed:", error?.message || error);
+  }
+})();
+
 const normalizeUser = u => u ? ({ uid: u.id, email: u.email || "", displayName: u.user_metadata?.full_name || u.user_metadata?.name || "" }) : null;
 window.FB = {
   signIn: async () => {
@@ -430,15 +455,15 @@ window.FB = {
     if (error) throw error;
   },
   onAuth(cb) {
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (error) console.error("Supabase session check failed", error);
-      currentUser = normalizeUser(data?.session?.user);
-      cb(currentUser);
-    });
     supabase.auth.onAuthStateChange((_event, session) => {
       currentUser = normalizeUser(session?.user);
       setTimeout(() => cb(currentUser), 0);
     });
+    authCallbackReady.then(() => supabase.auth.getSession()).then(({ data, error }) => {
+      if (error) console.error("Supabase session check failed:", error.message);
+      currentUser = normalizeUser(data?.session?.user);
+      cb(currentUser);
+    }).catch(error => console.error("Supabase auth initialization failed:", error?.message || error));
   },
   loadProgress: async () => {
     if (!currentUser) return null;
